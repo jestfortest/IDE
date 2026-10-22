@@ -1,0 +1,167 @@
+{
+  "1556622714155040798": {
+    "welcome": {
+      "enabled": true,
+      "message": "Welcome {user} you are now a person",
+      "channel_id": 1556990483211882587
+    },
+    "logs": {
+      "enabled": true,
+      "channel_id": 1556622714721009756,
+      "events": {
+        "message_delete": true,
+        "message_edit": false,
+        "member_join": true,
+        "member_leave": true,
+        "member_update": false,
+        "member_ban": true,
+        "member_unban": true,
+        "role_create": true,
+        "role_update": true,
+        "role_delete": true,
+        "channel_create": true,
+        "channel_update": true,
+        "channel_delete": true,
+        "voice_join": false,
+        "voice_leave": false,
+        "voice_move": false
+      }
+    },
+    "autoroles": {
+      "enabled": true,
+      "role_ids": [
+        1556627871378968627
+      ],
+      "trigger": "on_join"
+    },
+    "prefix": "!",
+    "ai_settings": {
+      "default_model": null,
+      "temperature": 0.7
+    },
+    "announcements": {
+      "channel_id": 1556622714721009756
+    },
+    "staff_roles": {
+      "moderator": [],
+      "senior_moderator": []
+    },
+    "ai_chat": {
+      "enabled": true,
+      "owner_id": 1539985623509766275,
+      "channel_id": 1558088596571947078,
+      "category_id": null,
+      "channels": {
+        "1539985623509766275": [
+          1558088596571947078,
+          1562768692776009791
+        ],
+        "1454043755236819017": [
+          1559744542721179718,
+          1559895306072489988,
+          1559895864275894333
+        ]
+      },
+      "channel_members": {
+        "1559744542721179718": [
+          1454043755236819017
+        ],
+        "1559895306072489988": [],
+        "1559895864275894333": [],
+        "1562768692776009791": []
+      },
+      "next_channel_number": 5,
+      "usage": {
+        "1454043755236819017": {
+          "requests": 8,
+          "prompt_tokens": 2536,
+          "completion_tokens": 1649,
+          "total_tokens": 4185,
+          "cost_usd": 0.0,
+          "last_model": "nvidia/nemotron-3.5-lightning:free",
+          "last_used": "2026-10-16T01:23:42.818017+00:00"
+        },
+        "1539985623509766275": {
+          "requests": 3,
+          "prompt_tokens": 515,
+          "completion_tokens": 551,
+          "total_tokens": 1066,
+          "cost_usd": 0.0,
+          "last_model": "liquid/lfm-2.5-2.6b:free",
+          "last_used": "2026-10-22T10:05:31.270245+00:00"
+        }
+      }
+    },
+    "transcripts": {
+      "enabled": false,
+      "channel_id": null
+    }
+  },
+  "12345": {
+    "welcome": {
+      "enabled": false,
+      "message": "",
+      "channel_id": null
+    },
+    "logs": {
+      "enabled": false,
+      "channel_id": null,
+      "events": {
+        "member_leave": true
+      }
+    },
+    "autoroles": {
+      "enabled": false,
+      "role_ids": [],
+      "trigger": "on_join"
+    },
+    "prefix": "!",
+    "ai_settings": {
+      "default_model": null,
+      "temperature": 0.7
+    },
+    "announcements": {
+      "channel_id": null
+    }
+  },
+  "1530180673137016923": {
+    "welcome": {
+      "enabled": false,
+      "message": "",
+      "channel_id": null
+    },
+    "logs": {
+      "enabled": false,
+      "channel_id": null,
+      "events": {
+        "member_leave": true
+      }
+    },
+    "announcements": {
+      "channel_id": 1530215653758206083
+    },
+    "autoroles": {
+      "enabled": false,
+      "role_ids": [],
+      "trigger": "on_join"
+    },
+    "prefix": "!",
+    "ai_settings": {
+      "default_model": null,
+      "temperature": 0.7
+    },
+    "staff_roles": {
+      "moderator": [],
+      "senior_moderator": []
+    },
+    "ai_chat": {
+      "enabled": false,
+      "channel_id": null,
+      "owner_id": null
+    },
+    "transcripts": {
+      "enabled": false,
+      "channel_id": null
+    }
+  }
+}

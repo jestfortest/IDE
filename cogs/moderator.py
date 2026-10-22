@@ -1,0 +1,715 @@
+import discord
+from discord import app_commands
+from discord.ext import commands
+import logging
+from typing import Optional
+import asyncio
+import datetime
+
+logger = logging.getLogger(__name__)
+
+
+def staff_level_required(required_level: str):
+    required_rank = {"moderator": 1, "senior_moderator": 2}[required_level]
+    level_display = "Moderator" if required_level == "moderator" else "Senior Moderator"
+
+    async def predicate(interaction: discord.Interaction) -> bool:
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            raise app_commands.CheckFailure("This command can only be used in a server.")
+        if member.guild_permissions.administrator:
+            return True
+
+        setup_cog = interaction.client.get_cog("SetupCog")
+        if setup_cog is not None:
+            staff_roles = setup_cog._get_guild_config(member.guild.id).get("staff_roles", {})
+            role_ids = set(staff_roles.get("senior_moderator", []))
+            if required_rank == 1:
+                role_ids.update(staff_roles.get("moderator", []))
+            if any(role.id in role_ids for role in member.roles):
+                return True
+
+        # Specific message based on required level
+        if required_level == "senior_moderator":
+            raise app_commands.CheckFailure(
+                f"❌ You need **Senior Moderator** permissions to use this command. "
+                f"This command requires: Ban Members, Manage Messages, Manage Channels. "
+                f"Ask an admin to give you the Senior Moderator role via `/setup permissions`."
+            )
+        else:
+            raise app_commands.CheckFailure(
+                f"❌ You need **Moderator** permissions to use this command. "
+                f"This command requires: Kick Members, Mute Members, Manage Messages. "
+                f"Ask an admin to give you the Moderator role via `/setup permissions`."
+            )
+
+    return app_commands.check(predicate)
+
+
+class ModeratorCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        # In-memory storage for warnings (in production, use a database)
+        self.warnings = {}  # {guild_id: {user_id: [warnings]}}
+
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.CheckFailure):
+            # The error message now contains specific permission info
+            message = str(error)
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+            return
+        logger.error("Unhandled moderation command error: %s", error, exc_info=error)
+    
+    def _get_warnings(self, guild_id: int, user_id: int) -> list:
+        """Get warnings for a user in a guild"""
+        return self.warnings.get(guild_id, {}).get(user_id, [])
+    
+    def _add_warning(self, guild_id: int, user_id: int, moderator_id: int, reason: str):
+        """Add a warning for a user"""
+        if guild_id not in self.warnings:
+            self.warnings[guild_id] = {}
+        if user_id not in self.warnings[guild_id]:
+            self.warnings[guild_id][user_id] = []
+        
+        warning = {
+            "moderator_id": moderator_id,
+            "reason": reason,
+            "timestamp": datetime.datetime.utcnow().isoformat()
+        }
+        self.warnings[guild_id][user_id].append(warning)
+    
+    @app_commands.command(name="kick", description="Kick a member from the server (Moderator permission required)")
+    @app_commands.describe(
+        member="The member to kick",
+        reason="Reason for kicking (optional)"
+    )
+    @staff_level_required("moderator")
+    @app_commands.guild_only()
+    async def kick(
+        self, 
+        interaction: discord.Interaction, 
+        member: discord.Member,
+        reason: Optional[str] = None
+    ):
+        # Check bot permissions
+        if not interaction.guild.me.guild_permissions.kick_members:
+            embed = discord.Embed(
+                title="❌ Bot Missing Permissions",
+                description="I don't have the **Kick Members** permission. Please give my role the Kick Members permission.",
+                color=0xe74c3c
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+            
+        await interaction.response.defer()
+        
+        try:
+            if reason is None:
+                reason = "No reason provided"
+            
+            await member.kick(reason=reason)
+            
+            embed = discord.Embed(
+                title="👢 Member Kicked",
+                description=f"{member.mention} has been kicked from the server.",
+                color=0xe67e22  # orange
+            )
+            embed.add_field(name="Reason", value=reason, inline=False)
+            embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Error in kick command: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description=f"An error occurred while trying to kick the member: {str(e)}",
+                color=0xe74c3c  # error color
+            )
+            await interaction.followup.send(embed=embed)
+    
+    @app_commands.command(name="ban", description="Ban a member from the server")
+    @app_commands.describe(
+        member="The member to ban",
+        reason="Reason for banning (optional)",
+        delete_message_days="Number of days of messages to delete (0-7)"
+    )
+    @staff_level_required("senior_moderator")
+    @app_commands.guild_only()
+    async def ban(
+        self, 
+        interaction: discord.Interaction, 
+        member: discord.Member,
+        reason: Optional[str] = None,
+        delete_message_days: Optional[int] = 0
+    ):
+        # Check bot permissions
+        if not interaction.guild.me.guild_permissions.ban_members:
+            embed = discord.Embed(
+                title="❌ Bot Missing Permissions",
+                description="I don't have the **Ban Members** permission. Please give my role the Ban Members permission.",
+                color=0xe74c3c
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+            
+        await interaction.response.defer()
+        
+        try:
+            if reason is None:
+                reason = "No reason provided"
+            
+            # Validate delete_message_days
+            if delete_message_days is None or delete_message_days < 0 or delete_message_days > 7:
+                delete_message_days = 0
+            
+            await member.ban(reason=reason, delete_message_days=delete_message_days)
+            
+            embed = discord.Embed(
+                title="🔨 Member Banned",
+                description=f"{member.mention} has been banned from the server.",
+                color=0xe74c3c  # red
+            )
+            embed.add_field(name="Reason", value=reason, inline=False)
+            embed.add_field(name="Messages Deleted", value=f"{delete_message_days} day(s)", inline=True)
+            embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Error in ban command: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description=f"An error occurred while trying to ban the member: {str(e)}",
+                color=0xe74c3c  # error color
+            )
+            await interaction.followup.send(embed=embed)
+    
+    @app_commands.command(name="unban", description="Unban a user from the server")
+    @app_commands.describe(
+        user_id="The user ID to unban",
+        reason="Reason for unbanning (optional)"
+    )
+    @staff_level_required("senior_moderator")
+    @app_commands.guild_only()
+    async def unban(
+        self, 
+        interaction: discord.Interaction, 
+        user_id: str,
+        reason: Optional[str] = None
+    ):
+        await interaction.response.defer()
+        
+        try:
+            if reason is None:
+                reason = "No reason provided"
+            
+            # Try to fetch the user
+            try:
+                user = await self.bot.fetch_user(int(user_id))
+            except:
+                embed = discord.Embed(
+                    title="❌ Error",
+                    description="Invalid user ID provided.",
+                    color=0xe74c3c  # error color
+                )
+                await interaction.followup.send(embed=embed)
+                return
+            
+            # Check if user is actually banned
+            ban_entry = None
+            async for ban in interaction.guild.bans():
+                if ban.user.id == int(user_id):
+                    ban_entry = ban
+                    break
+            
+            if not ban_entry:
+                embed = discord.Embed(
+                    title="❌ Error",
+                    description="This user is not banned from the server.",
+                    color=0xe74c3c  # error color
+                )
+                await interaction.followup.send(embed=embed)
+                return
+            
+            await interaction.guild.unban(user, reason=reason)
+            
+            embed = discord.Embed(
+                title="🔓 Member Unbanned",
+                description=f"{user.mention} has been unbanned from the server.",
+                color=0x2ecc71  # green
+            )
+            embed.add_field(name="Reason", value=reason, inline=False)
+            embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Error in unban command: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description=f"An error occurred while trying to unban the user: {str(e)}",
+                color=0xe74c3c  # error color
+            )
+            await interaction.followup.send(embed=embed)
+    
+    @app_commands.command(name="mute", description="Mute (timeout) a member")
+    @app_commands.describe(
+        member="The member to mute",
+        duration="Duration of mute in minutes (max 40320 = 28 days)",
+        reason="Reason for muting (optional)"
+    )
+    @staff_level_required("moderator")
+    @app_commands.guild_only()
+    async def mute(
+        self, 
+        interaction: discord.Interaction, 
+        member: discord.Member,
+        duration: Optional[int] = 60,
+        reason: Optional[str] = None
+    ):
+        # Check bot permissions
+        if not interaction.guild.me.guild_permissions.moderate_members:
+            embed = discord.Embed(
+                title="❌ Bot Missing Permissions",
+                description="I don't have the **Moderate Members** permission. Please give my role the Moderate Members permission.",
+                color=0xe74c3c
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+            
+        await interaction.response.defer()
+        
+        try:
+            if reason is None:
+                reason = "No reason provided"
+            
+            # Validate duration (Discord allows up to 28 days = 40320 minutes)
+            if duration is None or duration < 1 or duration > 40320:
+                duration = 60  # Default to 1 hour
+            
+            # Convert minutes to seconds for timeout
+            timeout_duration = datetime.timedelta(minutes=duration)
+            
+            await member.timeout(timeout_duration, reason=reason)
+            
+            embed = discord.Embed(
+                title="🔇 Member Muted",
+                description=f"{member.mention} has been muted for {duration} minute(s).",
+                color=0x95a5a6  # gray
+            )
+            embed.add_field(name="Reason", value=reason, inline=False)
+            embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Error in mute command: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description=f"An error occurred while trying to mute the member: {str(e)}",
+                color=0xe74c3c  # error color
+            )
+            await interaction.followup.send(embed=embed)
+    
+    @app_commands.command(name="unmute", description="Unmute (remove timeout from) a member")
+    @app_commands.describe(
+        member="The member to unmute",
+        reason="Reason for unmuting (optional)"
+    )
+    @staff_level_required("moderator")
+    @app_commands.guild_only()
+    async def unmute(
+        self, 
+        interaction: discord.Interaction, 
+        member: discord.Member,
+        reason: Optional[str] = None
+    ):
+        # Check bot permissions
+        if not interaction.guild.me.guild_permissions.moderate_members:
+            embed = discord.Embed(
+                title="❌ Bot Missing Permissions",
+                description="I don't have the **Moderate Members** permission. Please give my role the Moderate Members permission.",
+                color=0xe74c3c
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+            
+        await interaction.response.defer()
+        
+        try:
+            if reason is None:
+                reason = "No reason provided"
+            
+            # Remove timeout by setting it to None
+            await member.timeout(None, reason=reason)
+            
+            embed = discord.Embed(
+                title="🔊 Member Unmuted",
+                description=f"{member.mention} has been unmuted.",
+                color=0x2ecc71  # green
+            )
+            embed.add_field(name="Reason", value=reason, inline=False)
+            embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Error in unmute command: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description=f"An error occurred while trying to unmute the member: {str(e)}",
+                color=0xe74c3c  # error color
+            )
+            await interaction.followup.send(embed=embed)
+    
+    @app_commands.command(name="warn", description="Warn a member")
+    @app_commands.describe(
+        member="The member to warn",
+        reason="Reason for the warning"
+    )
+    @staff_level_required("moderator")
+    @app_commands.guild_only()
+    async def warn(
+        self, 
+        interaction: discord.Interaction, 
+        member: discord.Member,
+        reason: str
+    ):
+        await interaction.response.defer()
+        
+        try:
+            # Add warning to our tracking
+            self._add_warning(interaction.guild.id, member.id, interaction.user.id, reason)
+            
+            embed = discord.Embed(
+                title="⚠️ Member Warned",
+                description=f"{member.mention} has been warned.",
+                color=0xf1c40f  # yellow
+            )
+            embed.add_field(name="Reason", value=reason, inline=False)
+            embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+            embed.add_field(name="Total Warnings", value=str(len(self._get_warnings(interaction.guild.id, member.id))), inline=True)
+            
+            await interaction.followup.send(embed=embed)
+            
+            # Also try to DM the user about the warning
+            try:
+                dm_embed = discord.Embed(
+                    title="⚠️ Warning Issued",
+                    description=f"You have been warned in **{interaction.guild.name}**",
+                    color=0xf1c40f
+                )
+                dm_embed.add_field(name="Reason", value=reason, inline=False)
+                dm_embed.add_field(name="Moderator", value=interaction.user.mention, inline=False)
+                await member.send(embed=dm_embed)
+            except:
+                # User might have DMs disabled, that's okay
+                pass
+            
+        except Exception as e:
+            logger.error(f"Error in warn command: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description=f"An error occurred while trying to warn the member: {str(e)}",
+                color=0xe74c3c  # error color
+            )
+            await interaction.followup.send(embed=embed)
+    
+    @app_commands.command(name="warnings", description="View a member's warnings")
+    @app_commands.describe(
+        member="The member to check warnings for"
+    )
+    @staff_level_required("moderator")
+    @app_commands.guild_only()
+    async def warnings(
+        self, 
+        interaction: discord.Interaction, 
+        member: discord.Member
+    ):
+        await interaction.response.defer()
+        
+        try:
+            warnings_list = self._get_warnings(interaction.guild.id, member.id)
+            
+            if not warnings_list:
+                embed = discord.Embed(
+                    title="📋 Member Warnings",
+                    description=f"{member.mention} has no warnings.",
+                    color=0x2ecc71  # green
+                )
+            else:
+                embed = discord.Embed(
+                    title="📋 Member Warnings",
+                    description=f"{member.mention} has {len(warnings_list)} warning(s):",
+                    color=0xf1c40f  # yellow
+                )
+                
+                for i, warning in enumerate(warnings_list[-5:], 1):  # Show last 5 warnings
+                    moderator = f"<@{warning['moderator_id']}>" if warning['moderator_id'] else "Unknown"
+                    timestamp = datetime.datetime.fromisoformat(warning['timestamp']).strftime("%Y-%m-%d %H:%M")
+                    embed.add_field(
+                        name=f"Warning {len(warnings_list) - 5 + i}",
+                        value=f"**Reason:** {warning['reason']}\n**By:** {moderator}\n**When:** {timestamp}",
+                        inline=False
+                    )
+                
+                if len(warnings_list) > 5:
+                    embed.set_footer(text=f"Showing 5 most recent warnings out of {len(warnings_list)} total")
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Error in warnings command: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description=f"An error occurred while retrieving warnings: {str(e)}",
+                color=0xe74c3c  # error color
+            )
+            await interaction.followup.send(embed=embed)
+    
+    @app_commands.command(name="clear", description="Clear messages from a channel")
+    @app_commands.describe(
+        amount="Number of messages to delete (1-100)",
+        member="Only delete messages from this member (optional)"
+    )
+    @staff_level_required("moderator")
+    @app_commands.guild_only()
+    async def clear(
+        self, 
+        interaction: discord.Interaction, 
+        amount: Optional[int] = 5,
+        member: Optional[discord.Member] = None
+    ):
+        # Check bot permissions
+        if not interaction.guild.me.guild_permissions.manage_messages:
+            embed = discord.Embed(
+                title="❌ Bot Missing Permissions",
+                description="I don't have the **Manage Messages** permission. Please give my role the Manage Messages permission.",
+                color=0xe74c3c
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+            
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            # Validate amount
+            if amount is None or amount < 1 or amount > 100:
+                amount = 5
+            
+            # Define check function if member is specified
+            def check(message):
+                return member is None or message.author == member
+            
+            # Purge messages
+            deleted = await interaction.channel.purge(limit=amount+1, check=check)  # +1 to account for the command message
+            
+            # Send confirmation (will be deleted quickly)
+            embed = discord.Embed(
+                title="🧹 Messages Cleared",
+                description=f"Successfully deleted {len(deleted)-1} message(s).",
+                color=0x2ecc71  # green
+            )
+            
+            if member:
+                embed.add_field(name="Filtered by", value=member.mention, inline=True)
+            
+            # Send and then delete after 5 seconds
+            msg = await interaction.followup.send(embed=embed, ephemeral=True)
+            await asyncio.sleep(5)
+            try:
+                await msg.delete()
+            except:
+                pass  # Ignore if already deleted
+            
+        except Exception as e:
+            logger.error(f"Error in clear command: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description=f"An error occurred while clearing messages: {str(e)}",
+                color=0xe74c3c  # error color
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+    
+    @app_commands.command(name="slowmode", description="Set channel slowmode")
+    @app_commands.describe(
+        seconds="Slowmode delay in seconds (0-21600, 0 to disable)",
+        reason="Reason for setting slowmode (optional)",
+        channel="The channel to set slowmode for (defaults to current channel)",
+        hidden="Whether to hide the response from others (ephemeral)"
+    )
+    @staff_level_required("senior_moderator")
+    @app_commands.guild_only()
+    async def slowmode(
+        self, 
+        interaction: discord.Interaction, 
+        seconds: int,
+        reason: Optional[str] = None,
+        channel: Optional[discord.TextChannel] = None,
+        hidden: bool = False
+    ):
+        # Check bot permissions
+        target_channel = channel or interaction.channel
+        if not target_channel.permissions_for(interaction.guild.me).manage_channels:
+            embed = discord.Embed(
+                title="❌ Bot Missing Permissions",
+                description="I don't have the **Manage Channels** permission in that channel. Please give my role the Manage Channels permission.",
+                color=0xe74c3c
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+            
+        await interaction.response.defer(ephemeral=hidden)
+        
+        try:
+            if reason is None:
+                reason = "No reason provided"
+
+            # Validate seconds (Discord allows 0-21600 seconds = 6 hours)
+            if seconds < 0 or seconds > 21600:
+                embed = discord.Embed(
+                    title="❌ Error",
+                    description="Slowmode delay must be between 0 and 21600 seconds (0 to disable, max 6 hours).",
+                    color=0xe74c3c  # error color
+                )
+                await interaction.followup.send(embed=embed, ephemeral=hidden)
+                return
+
+            await target_channel.edit(slowmode_delay=seconds, reason=reason)
+
+            if seconds == 0:
+                embed = discord.Embed(
+                    title="🐢 Slowmode Disabled",
+                    description=f"Slowmode has been disabled for {target_channel.mention}.",
+                    color=0x2ecc71  # green
+                )
+            else:
+                embed = discord.Embed(
+                    title="🐢 Slowmode Enabled",
+                    description=f"Slowmode has been set to {seconds} second(s) for {target_channel.mention}.",
+                    color=0xf39c12  # orange
+                )
+
+            embed.add_field(name="Reason", value=reason, inline=False)
+            embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+
+            await interaction.followup.send(embed=embed, ephemeral=hidden)
+
+        except Exception as e:
+            logger.error(f"Error in slowmode command: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description=f"An error occurred while setting slowmode: {str(e)}",
+                color=0xe74c3c  # error color
+            )
+            await interaction.followup.send(embed=embed, ephemeral=hidden)
+    
+    @app_commands.command(name="lock", description="Lock a channel")
+    @app_commands.describe(
+        reason="Reason for locking the channel (optional)"
+    )
+    @staff_level_required("senior_moderator")
+    @app_commands.guild_only()
+    async def lock(
+        self, 
+        interaction: discord.Interaction, 
+        reason: Optional[str] = None
+    ):
+        # Check bot permissions
+        if not interaction.guild.me.guild_permissions.manage_channels:
+            embed = discord.Embed(
+                title="❌ Bot Missing Permissions",
+                description="I don't have the **Manage Channels** permission. Please give my role the Manage Channels permission.",
+                color=0xe74c3c
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+            
+        await interaction.response.defer()
+        
+        try:
+            if reason is None:
+                reason = "No reason provided"
+            
+            # Deny send_messages permission for @everyone
+            overwrite = interaction.channel.overwrites_for(interaction.guild.default_role)
+            overwrite.send_messages = False
+            await interaction.channel.set_permissions(interaction.guild.default_role, overwrite=overwrite, reason=reason)
+            
+            embed = discord.Embed(
+                title="🔒 Channel Locked",
+                description=f"{interaction.channel.mention} has been locked.",
+                color=0x95a5a6  # gray
+            )
+            embed.add_field(name="Reason", value=reason, inline=False)
+            embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Error in lock command: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description=f"An error occurred while locking the channel: {str(e)}",
+                color=0xe74c3c  # error color
+            )
+            await interaction.followup.send(embed=embed)
+    
+    @app_commands.command(name="unlock", description="Unlock a channel")
+    @app_commands.describe(
+        reason="Reason for unlocking the channel (optional)"
+    )
+    @staff_level_required("senior_moderator")
+    @app_commands.guild_only()
+    async def unlock(
+        self, 
+        interaction: discord.Interaction, 
+        reason: Optional[str] = None
+    ):
+        # Check bot permissions
+        if not interaction.guild.me.guild_permissions.manage_channels:
+            embed = discord.Embed(
+                title="❌ Bot Missing Permissions",
+                description="I don't have the **Manage Channels** permission. Please give my role the Manage Channels permission.",
+                color=0xe74c3c
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+            
+        await interaction.response.defer()
+        
+        try:
+            if reason is None:
+                reason = "No reason provided"
+            
+            # Remove the overwrite or restore send_messages permission
+            overwrite = interaction.channel.overwrites_for(interaction.guild.default_role)
+            if overwrite.send_messages is False:
+                overwrite.send_messages = None  # Reset to inherited
+                await interaction.channel.set_permissions(interaction.guild.default_role, overwrite=overwrite, reason=reason)
+            
+            embed = discord.Embed(
+                title="🔓 Channel Unlocked",
+                description=f"{interaction.channel.mention} has been unlocked.",
+                color=0x2ecc71  # green
+            )
+            embed.add_field(name="Reason", value=reason, inline=False)
+            embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Error in unlock command: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description=f"An error occurred while unlocking the channel: {str(e)}",
+                color=0xe74c3c  # error color
+            )
+            await interaction.followup.send(embed=embed)
+
+async def setup(bot):
+    await bot.add_cog(ModeratorCog(bot))

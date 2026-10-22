@@ -1,0 +1,9 @@
+{
+  "excluded_providers": [
+    "apodex",
+    "dots",
+    "dots-studio",
+    "poolside",
+    "space-bunny-alpha"
+  ]
+}

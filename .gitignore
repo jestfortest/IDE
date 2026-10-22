@@ -1,0 +1,6 @@
+.env
+api_providers.json
+*.db
+__pycache__/
+*.pyc
+.DS_Store
