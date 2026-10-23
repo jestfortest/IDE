@@ -89,9 +89,15 @@ def fetch_models():
     return None
 
 
-def is_free_model(model_id):
+def is_free_model(model):
     """Check if a model is free (has :free suffix)."""
+    model_id = model.get("id", "")
     return model_id.endswith(":free")
+
+
+def is_paid_model(model_id):
+    """Check if a model is explicitly paid (has :paid suffix)."""
+    return model_id.endswith(":paid")
 
 
 def is_excluded_provider(model_id, excluded_providers):
@@ -107,7 +113,10 @@ def filter_free_models(models, excluded_providers=None):
     free_models = []
     for model in models:
         model_id = model.get("id", "")
-        if is_free_model(model_id) and not is_excluded_provider(model_id, excluded_providers):
+        # Only include models that have the :free suffix — the most reliable
+        # indicator that a model is genuinely free for chat completion.
+        # (Some models show $0 pricing but are only free for other modalities.)
+        if is_free_model(model) and not is_paid_model(model_id) and not is_excluded_provider(model_id, excluded_providers):
             free_models.append(model_id)
     
     # Remove duplicates while preserving order
