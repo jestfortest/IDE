@@ -150,9 +150,13 @@ class OpenRouterService:
         alias = alias.strip().lower()
         base_url = base_url.strip().rstrip("/")
         api_key = api_key.strip()
-        reserved_names = set(self.MODEL_POOLS) | {"openrouter"}
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", alias) or alias in reserved_names:
+        reserved_names = set(self.MODEL_POOLS)
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", alias):
             raise ValueError("Use a unique alias of 1-32 lowercase letters, numbers, hyphens, or underscores.")
+        if alias in reserved_names:
+            raise ValueError(f"'{alias}' is a reserved name (it's a pool name). Pick a different alias.")
+        if alias in self.api_providers:
+            raise ValueError(f"Alias '{alias}' is already in use. Pick a different one or remove it first.")
         parsed_url = urlsplit(base_url)
         if (
             parsed_url.scheme != "https"

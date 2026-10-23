@@ -649,7 +649,7 @@ PROVIDER_PRESETS = [
     ("🟢 OpenAI", "openai", "https://api.openai.com/v1", "sk-..."),
     ("🟠 Anthropic Claude", "claude", "https://api.anthropic.com/v1", "sk-ant-..."),
     ("🔵 Google Gemini", "gemini", "https://generativelanguage.googleapis.com/v1beta/openai/", "AIza..."),
-    ("🌐 OpenRouter", "openrouter", "https://openrouter.ai/api/v1", "sk-or-..."),
+    ("🌐 OpenRouter", "or", "https://openrouter.ai/api/v1", "sk-or-..."),
     ("⚫ Nvidia NIM", "nvidia", "https://integrate.api.nvidia.com/v1", "nvapi-..."),
     ("⚪ Mistral", "mistral", "https://api.mistral.ai/v1", "sk-..."),
     ("🟣 Groq", "groq", "https://api.groq.com/openai/v1", "gsk_..."),
@@ -684,6 +684,40 @@ class ProviderPresetSelect(discord.ui.Select):
             preset_label=preset[0].strip(),
         )
         await interaction.response.send_modal(modal)
+
+
+# Helper: detect image/audio generation model IDs
+GEN_MODEL_HINTS = (
+    "image", "diffusion", "flux", "sdxl", "stable-diffusion",
+    "dall", "playground", "midjourney", "tts", "speech",
+    "audio", "whisper", "s2.", "elevenlabs",
+)
+
+
+def is_free_model(model: dict) -> bool:
+    """Return True if a model dict is free (ends in ':free', or pricing is zero)."""
+    model_id = (model.get("id") or "").lower()
+    if model_id.endswith(":free"):
+        return True
+    pricing = model.get("pricing") or {}
+    if isinstance(pricing, dict):
+        try:
+            if float(pricing.get("prompt", 1)) == 0 and float(pricing.get("completion", 1)) == 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
+def is_generation_model(model_id: str) -> bool:
+    """Return True if a model ID is an image or audio generation model."""
+    mid = (model_id or "").lower()
+    return any(hint in mid for hint in GEN_MODEL_HINTS)
+
+
+def price_sort_key(model: dict):
+    """Sort key: free models first, then by model id."""
+    return (0 if is_free_model(model) else 1, (model.get("id") or "").lower())
 
 
 class APIProviderStep1Modal(discord.ui.Modal, title="Add API Provider"):
@@ -789,27 +823,73 @@ class APIProviderStep1Modal(discord.ui.Modal, title="Add API Provider"):
                         )
                         return
                     
-                    # Show model selection view
-                    view = APIProviderModelSelectView(
+                    # Split models into text/code vs image/audio generation groups
+                    text_models = [m for m in models if not is_generation_model(m.get("id", ""))]
+                    gen_models = [m for m in models if is_generation_model(m.get("id", ""))]
+
+                    # Sort each group: free models first, then by id
+                    text_models.sort(key=price_sort_key)
+                    gen_models.sort(key=price_sort_key)
+
+                    # Shared state so both views coordinate saving
+                    shared_state = {
+                        "service": self.service,
+                        "alias": alias,
+                        "base_url": base_url,
+                        "api_key": api_key,
+                        "user_id": self.user_id,
+                        "user_name": self.user_name,
+                        "selected_models": set(),
+                        "saved": False,
+                    }
+
+                    # Message 1: text/code/reasoning models
+                    text_view = APIProviderModelSelectView(
                         service=self.service,
                         alias=alias,
                         base_url=base_url,
                         api_key=api_key,
                         user_id=self.user_id,
                         user_name=self.user_name,
-                        models=models,
+                        models=text_models,
+                        shared_state=shared_state,
                     )
-                    
-                    embed = discord.Embed(
-                        title=f"📦 Found {len(models)} models",
-                        description=f"Provider: **{alias}**\nURL: `{base_url}`\n\nSelect which models to import to your pools:",
-                        color=0x3498db
+                    gen_view = None
+                    shared_state["sibling_views"] = [text_view]
+                    text_embed = discord.Embed(
+                        title=f"💬 Text, Code & Reasoning Models ({len(text_models)})",
+                        description=f"Provider: **{alias}**\nURL: `{base_url}`\n\nSelect which text/code models to import. Free models are marked **[FREE]**.",
+                        color=0x3498db,
                     )
                     await interaction.edit_original_response(
                         content=None,
-                        embed=embed,
-                        view=view
+                        embed=text_embed,
+                        view=text_view,
                     )
+
+                    # Message 2 (followup): image/audio generation models
+                    if gen_models:
+                        gen_view = APIProviderModelSelectView(
+                            service=self.service,
+                            alias=alias,
+                            base_url=base_url,
+                            api_key=api_key,
+                            user_id=self.user_id,
+                            user_name=self.user_name,
+                            models=gen_models,
+                            shared_state=shared_state,
+                        )
+                        shared_state["sibling_views"].append(gen_view)
+                        gen_embed = discord.Embed(
+                            title=f"🎨 Image & Audio Generation Models ({len(gen_models)})",
+                            description=f"Provider: **{alias}**\nURL: `{base_url}`\n\nSelect which image/audio generation models to import. Free models are marked **[FREE]**.",
+                            color=0x3498db,
+                        )
+                        await interaction.followup.send(
+                            embed=gen_embed,
+                            view=gen_view,
+                            ephemeral=True,
+                        )
                     
         except Exception as e:
             await interaction.edit_original_response(
@@ -819,7 +899,8 @@ class APIProviderStep1Modal(discord.ui.Modal, title="Add API Provider"):
 
 class APIProviderModelSelectView(discord.ui.View):
     """View for selecting which models to import"""
-    def __init__(self, service, alias, base_url, api_key, user_id, user_name, models, timeout=300):
+    def __init__(self, service, alias, base_url, api_key, user_id, user_name, models,
+                 timeout=300, shared_state=None):
         super().__init__(timeout=timeout)
         self.service = service
         self.alias = alias
@@ -828,23 +909,26 @@ class APIProviderModelSelectView(discord.ui.View):
         self.user_id = user_id
         self.user_name = user_name
         self.models = models
-        self.selected_models = set()
-        
-        # Prioritize image/generation models so they show first
-        gen_hints = ("image", "diffusion", "flux", "sdxl", "stable-diffusion", "dall", "playground", "midjourney", "sdxl", "tts", "speech", "audio", "whisper", "s2.")
-        def sort_key(m):
-            mid = m.get("id", "").lower()
-            return 0 if any(h in mid for h in gen_hints) else 1
-        models_sorted = sorted(models, key=sort_key)
-        
+
+        # Use shared state if provided, otherwise create local state
+        if shared_state is not None:
+            self.shared_state = shared_state
+            self.selected_models = shared_state["selected_models"]
+        else:
+            self.shared_state = None
+            self.selected_models = set()
+
+        # Sort: free models first, then by name (no gen prioritizing)
+        models_sorted = sorted(models, key=price_sort_key)
+
         # Max 24 model buttons + 1 confirm = 25 (Discord's component limit)
         max_buttons = 24
         for model in models_sorted[:max_buttons]:
             model_id = model.get("id", "unknown")
-            model_name = model.get("name", model_id).split("/")[-1][:45]
-            select = ModelCheckbox(model_id, model_name)
+            is_free = is_free_model(model)
+            select = ModelCheckbox(model_id, model.get("name", model_id), is_free)
             self.add_item(select)
-        
+
         # Add confirm button
         confirm = discord.ui.Button(
             label="Save selected models",
@@ -853,7 +937,7 @@ class APIProviderModelSelectView(discord.ui.View):
         )
         confirm.callback = self.confirm_callback
         self.add_item(confirm)
-    
+
     async def confirm_callback(self, interaction: discord.Interaction):
         if not self.selected_models:
             await interaction.response.send_message(
@@ -861,20 +945,25 @@ class APIProviderModelSelectView(discord.ui.View):
                 ephemeral=True
             )
             return
-        
-        # Save the provider
-        try:
-            self.service.add_api_provider(
-                self.alias, self.base_url, self.api_key,
-                actor_id=self.user_id, actor_name=self.user_name
-            )
-        except (OSError, ValueError) as error:
-            await interaction.response.send_message(f"❌ Provider was not saved: {error}", ephemeral=True)
-            return
-        
+
+        # Save the provider once (shared state prevents double-saving)
+        if self.shared_state is not None and self.shared_state.get("saved"):
+            pass
+        else:
+            try:
+                self.service.add_api_provider(
+                    self.alias, self.base_url, self.api_key,
+                    actor_id=self.user_id, actor_name=self.user_name
+                )
+            except (OSError, ValueError) as error:
+                await interaction.response.send_message(f"❌ Provider was not saved: {error}", ephemeral=True)
+                return
+            if self.shared_state is not None:
+                self.shared_state["saved"] = True
+
         # Create summary
         selected_list = "\n".join(f"`{self.alias}::{m}`" for m in sorted(self.selected_models))
-        
+
         embed = discord.Embed(
             title="✅ Provider Saved!",
             description=f"Provider **{self.alias}** has been added with {len(self.selected_models)} model(s):\n\n{selected_list}",
@@ -885,9 +974,24 @@ class APIProviderModelSelectView(discord.ui.View):
             value=f"Use models as `{self.alias}::model-id` with `/ask` or `/converse` commands.\nExample: `/ask What's 2+2? model:{self.alias}::some-model`",
             inline=False
         )
-        
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        
+
+        # Update both views' confirm buttons if using shared state
+        if self.shared_state is not None and "sibling_views" in self.shared_state:
+            for sibling_view in self.shared_state["sibling_views"]:
+                if sibling_view is not self:
+                    for item in sibling_view.children:
+                        if isinstance(item, discord.ui.Button) and item.custom_id == "api_provider:confirm_models":
+                            item.disabled = True
+        else:
+            for item in self.children:
+                if isinstance(item, discord.ui.Button) and item.custom_id == "api_provider:confirm_models":
+                    item.disabled = True
+
+        try:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception:
+            pass
+
         # Audit log
         setup_cog = interaction.client.get_cog("SetupCog")
         if setup_cog:
@@ -906,15 +1010,26 @@ class APIProviderModelSelectView(discord.ui.View):
                 )
             except Exception as e:
                 logger.warning("Could not send API provider add log: %s", e)
-        
-        # Stop the view
-        self.stop()
+
+        # Stop both views if shared state
+        if self.shared_state is not None:
+            self.stop()
+        else:
+            self.stop()
 
 
 class ModelCheckbox(discord.ui.Button):
     """A checkbox button for a single model"""
-    def __init__(self, model_id, model_name):
+    def __init__(self, model_id, model_name, is_free=False):
         import hashlib
+        # Format label: truncate name so label + optional [FREE] fits 80 chars
+        display_name = model_name.split("/")[-1][:45]
+        if is_free:
+            free_tag = " [FREE]"
+            max_len = 80 - len(free_tag)
+            if len(display_name) > max_len:
+                display_name = display_name[:max_len]
+            display_name += free_tag
         # custom_id must be <= 100 chars
         if len(model_id) <= 90:
             cid = f"api_model:{model_id}"
@@ -922,7 +1037,7 @@ class ModelCheckbox(discord.ui.Button):
             digest = hashlib.md5(model_id.encode()).hexdigest()
             cid = f"api_model:{digest}"
         super().__init__(
-            label=model_name,
+            label=display_name,
             style=discord.ButtonStyle.secondary,
             custom_id=cid
         )
