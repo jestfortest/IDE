@@ -42,8 +42,8 @@ if not audit_logger.handlers:
     audit_logger.propagate = False
 
 class OpenRouterService:
-    def __init__(self, api_key: str):
-        self.api_key = api_key
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key if api_key and api_key.strip() else None
         self.base_url = "https://openrouter.ai/api/v1"
         self.session: Optional[aiohttp.ClientSession] = None
         self.DEFAULT_TEXT_POOL = DEFAULT_TEXT_POOL
@@ -195,6 +195,11 @@ class OpenRouterService:
 
     def _get_request_provider(self, model: str) -> Tuple[str, str, str]:
         if "::" not in model:
+            if not self.api_key:
+                raise ValueError(
+                    "No API key configured. Add one via /setup providers add "
+                    "or set OPENROUTER_API_KEY in .env."
+                )
             return self.api_key, self.base_url, model
         alias, provider_model = model.split("::", 1)
         provider = self.api_providers.get(alias)
