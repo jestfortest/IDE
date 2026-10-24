@@ -1,4 +1,4 @@
-# Infinity Lounge Bot
+# IDE (**I**t **D**oes **E**verything
 
 A Discord bot with AI chat, image/audio generation, moderation tools, and flexible API provider support — all running on free models.
 
