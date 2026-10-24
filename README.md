@@ -250,4 +250,4 @@ pip install -r requirements.txt
 
 ---
 
-*Made with ❤️ for the Infinity Lounge community. Free models only — no paid tiers.*
+*Made with ❤️ for the Discord community. Free models only — no paid tiers.*
