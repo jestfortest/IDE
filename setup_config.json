@@ -24,7 +24,8 @@
         "channel_delete": true,
         "voice_join": false,
         "voice_leave": false,
-        "voice_move": false
+        "voice_move": false,
+        "api_provider": false
       }
     },
     "autoroles": {

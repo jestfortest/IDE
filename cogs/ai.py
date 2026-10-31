@@ -1112,11 +1112,14 @@ class AICog(commands.Cog):
         try:
             # Run the model pool updater script
             import subprocess
+            import sys
+            script_path = self.bot.openrouter_service.providers_file.parent / "update_model_pools.py"
             result = subprocess.run(
-                ["python3", "/Users/aidenchang/Documents/important/projects/Discord Bots/Infinity_lounge_bot/update_model_pools.py"],
+                [sys.executable, str(script_path)],
                 capture_output=True,
                 text=True,
-                timeout=120
+                timeout=120,
+                cwd=script_path.parent,
             )
             
             if result.returncode == 0:

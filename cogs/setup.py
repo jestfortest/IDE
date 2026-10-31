@@ -961,12 +961,28 @@ class APIProviderModelSelectView(discord.ui.View):
             if self.shared_state is not None:
                 self.shared_state["saved"] = True
 
+        # Automatically add selected models to the default pool
+        # Models are stored with the "alias::model-id" prefix so the bot
+        # routes requests to the correct provider
+        try:
+            prefixed = sorted({f"{self.alias}::{m}" for m in self.selected_models})
+            existing = list(self.service.MODEL_POOLS.get("default", []))
+            merged = list(dict.fromkeys(existing + prefixed))
+            self.service.save_pool_override(
+                "default",
+                merged,
+                actor_id=self.user_id,
+                actor_name=self.user_name
+            )
+        except Exception as pool_err:
+            logger.warning("Could not auto-add models to default pool: %s", pool_err)
+
         # Create summary
         selected_list = "\n".join(f"`{self.alias}::{m}`" for m in sorted(self.selected_models))
 
         embed = discord.Embed(
             title="✅ Provider Saved!",
-            description=f"Provider **{self.alias}** has been added with {len(self.selected_models)} model(s):\n\n{selected_list}",
+            description=f"Provider **{self.alias}** has been added with {len(self.selected_models)} model(s):\n\n{selected_list}\n\n✅ Models have been automatically added to the **default** pool.",
             color=0x2ecc71
         )
         embed.add_field(
@@ -1244,7 +1260,7 @@ class APIProviderNoModelsView(discord.ui.View):
 class SetupCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.config_file = "/Users/aidenchang/Documents/important/projects/Discord Bots/Infinity_lounge_bot/setup_config.json"
+        self.config_file = bot.openrouter_service.providers_file.parent / "setup_config.json"
         self.config = self._load_config()
         self.ai_chat_creation_locks = {}
 
@@ -1735,6 +1751,52 @@ class SetupCog(commands.Cog):
             f"Announcement posted in {channel.mention}.",
             ephemeral=True,
         )
+
+    @app_commands.command(
+        name="update-models",
+        description="Refresh model pools from OpenRouter and all configured custom providers (admin only)",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.guild_only()
+    async def update_models(self, interaction: discord.Interaction):
+        """Run update_model_pools.py to fetch latest free models from all providers."""
+        import subprocess
+        import sys
+
+        await interaction.response.defer(ephemeral=True)
+        script_path = self.bot.openrouter_service.providers_file.parent / "update_model_pools.py"
+        try:
+            result = subprocess.run(
+                [sys.executable, str(script_path)],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd=script_path.parent,
+            )
+        except Exception as e:
+            await interaction.followup.send(f"❌ Failed to run update script: {e}", ephemeral=True)
+            return
+
+        output = result.stdout + result.stderr
+        # Truncate to avoid hitting Discord's 2000-char embed limit
+        if len(output) > 1800:
+            output = output[:1800] + "\n\n_(output truncated)_"
+
+        if result.returncode == 0:
+            embed = discord.Embed(
+                title="✅ Model Pool Update Complete",
+                description=f"```\n{output}\n```",
+                color=0x2ecc71,
+            )
+        else:
+            embed = discord.Embed(
+                title="⚠️ Model Pool Update Finished with Warnings",
+                description=f"```\n{output}\n```",
+                color=0xf39c12,
+            )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     # Welcome Group (nested under setup)
     welcome = app_commands.Group(

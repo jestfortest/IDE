@@ -128,9 +128,10 @@ class OpenRouterService:
         actor_part = f" by {actor_name} ({actor_id})" if actor_id else ""
         audit_logger.info("MODEL POOL UPDATED: pool=%s models=%d%s", pool_name, len(models), actor_part)
 
-    def _load_api_providers(self) -> Dict[str, Dict[str, str]]:
+    @staticmethod
+    def load_api_providers_from_file(providers_file_path: Path) -> Dict[str, Dict[str, str]]:
         try:
-            with self.providers_file.open("r", encoding="utf-8") as provider_file:
+            with providers_file_path.open("r", encoding="utf-8") as provider_file:
                 providers = json.load(provider_file)
             if isinstance(providers, dict):
                 return {
@@ -143,8 +144,11 @@ class OpenRouterService:
         except FileNotFoundError:
             return {}
         except (OSError, json.JSONDecodeError) as error:
-            logger.error("Could not load API-compatible providers: %s", error)
+            logger.error("Could not load API-compatible providers from %s: %s", providers_file_path, error)
         return {}
+
+    def _load_api_providers(self) -> Dict[str, Dict[str, str]]:
+        return OpenRouterService.load_api_providers_from_file(self.providers_file)
 
     def add_api_provider(self, alias: str, base_url: str, api_key: str, actor_id: Optional[int] = None, actor_name: Optional[str] = None) -> None:
         alias = alias.strip().lower()
@@ -539,11 +543,14 @@ class InfinityLoungeBot(commands.Bot):
             # Also refresh model pools from OpenRouter API to account for new/removed models
             try:
                 import subprocess
+                import sys
+                script_path = Path(__file__).parent / "update_model_pools.py"
                 result = subprocess.run(
-                    ["python3", "/Users/aidenchang/Documents/important/projects/Discord Bots/Infinity_lounge_bot/update_model_pools.py"],
+                    [sys.executable, str(script_path)],
                     capture_output=True,
                     text=True,
-                    timeout=120
+                    timeout=120,
+                    cwd=Path(__file__).parent,
                 )
                 if result.returncode == 0:
                     import importlib
